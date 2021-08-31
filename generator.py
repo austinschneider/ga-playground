@@ -335,9 +335,9 @@ class ASTElement(_ASTElement):
         else:
             f = str(self.factor) + "*"
         if c_pow:
-            s = mul_str.join([(("std::pow(" + str(k) + "," + str(count) + ")" if count > 1 else str(k)) if count > 0 else "") for (k,count),count in self.sources.items()])
+            s = mul_str.join([(("std::pow(" + str(k) + "," + str(count) + ")" if count > 1 else str(k)) if count > 0 else "") for k,count in self.sources.items()])
         else:
-            s = mul_str.join([(str(k)+("^"+str(count) if count > 1 else "") if count > 0 else "") for (k,count),count in self.sources.items()])
+            s = mul_str.join([(str(k)+("^"+str(count) if count > 1 else "") if count > 0 else "") for k,count in self.sources.items()])
         b = "e" + "".join([str(d) for d in self.blade])
         return f"{f}{s}*{b}"
     def __repr__(self):
@@ -398,7 +398,7 @@ class ASTMultiVector(_ASTMultiVector):
 def make_element(sourceID, loc, blade):
     scalar, blade = reduce_to_basis(MVElement(1.0, blade), basis_vectors, metric)
     source = ASTSource(sourceID=sourceID, loc=loc)
-    counter = collections.Counter([(source, 1)])
+    counter = collections.Counter([source])
     element = ASTElement(sources=counter, factor=scalar, blade=blade)
     element_sum = ASTSum(elements=[element], blade=blade)
     multivector = ASTMultiVector()
@@ -453,6 +453,32 @@ def multivector_add_assign(mv0, mv1):
 a = make_element("A", 0, (0,))
 b = make_element("B", 0, (0,))
 multivector_add(a, b)
+
+# %%
+import sympy
+import sympy.printing
+def source_to_sympy(source):
+    return sympy.symbols(str(source))
+
+def element_to_sympy(elem):
+    res = elem.factor
+    for source, count in elem.sources.items():
+        if res == 1:
+            res = source_to_sympy(source) ** count
+        elif res == -1:
+            res = -source_to_sympy(source) ** count
+        else:
+            res *= source_to_sympy(source) ** count
+    return res
+
+def sum_to_sympy(s):
+    return sum(element_to_sympy(element) for element in s.elements)
+
+def multivector_to_sympy(mv):
+    return [sum_to_sympy(mv.sums[i]) if mv.sums[i] is not None else None for i, blade in enumerate(mv.blades)]
+b = make_element("B", 2, (0,))
+mv_sym = multivector_to_sympy(multivector_mul(b, b))
+[sympy.printing.cxxcode(s) for s in mv_sym]
 
 
 # %%
@@ -854,6 +880,41 @@ def codegen_assignment(dest, quant, tab=None):
             lines.append(tab + res_sum_string + "=" + prod_sum_string + ";")
     return "\n".join(lines)
 
+def sym_to_cpp(s):
+    return sympy.printing.cxxcode(s, standard="C++11")
+
+def codegen_assignment(dest, quant, tab=None):
+    if tab is None:
+        tab = "    "
+    if type(quant) is ASTMultiVector:
+        quant_sym = multivector_to_sympy(quant)
+    else:
+        quant_sym = quant
+    poly_subexpressions, poly_expressions = sympy.cse(quant_sym)
+    factor_subexpressions, factor_expressions = sympy.cse(sympy.factor(quant_sym))
+    poly_count = sum([s.count_ops() for n,s in poly_subexpressions] + [e.count_ops() for e in poly_expressions if e is not None])
+    factor_count = sum([s.count_ops() for n,s in factor_subexpressions] + [e.count_ops() for e in factor_expressions if e is not None])
+    if poly_count < factor_count:
+        subexpressions, expressions = poly_subexpressions, poly_expressions
+    else:
+        subexpressions, expressions = factor_subexpressions, factor_expressions
+    lines = []
+    for name, subex in subexpressions:
+        lines.append(tab + "T " + sym_to_cpp(name) + " = " + sym_to_cpp(subex) + ";")
+    for i, (res_sum, ex) in enumerate(zip(dest.sums, expressions)):
+        if res_sum is None:
+            continue
+        res_sum_string = res_sum.alt_repr(mul_str="*", c_pow=True)
+        idx = res_sum_string.rfind("e")
+        res_sum_string = res_sum_string[:idx]
+        
+        if ex is None:
+            lines.append(tab + res_sum_string + "=0;")
+        else:
+            prod_sum_string = sym_to_cpp(ex)
+            lines.append(tab + res_sum_string + "=" + prod_sum_string + ";")
+    return "\n".join(lines)
+
 def codegen_product(cls0, cls1, signature=False):
     mv0 = functools.reduce(multivector_add, [make_element("A", i, blade) for i,blade in enumerate(cls0.blades)])
     mv1 = functools.reduce(multivector_add, [make_element("B", i, blade) for i,blade in enumerate(cls1.blades)])
@@ -880,6 +941,87 @@ def codegen_product(cls0, cls1, signature=False):
 print(codegen_product(classes_by_name["R130B2"], classes_by_name["R130B2"], signature=True))
 print()
 print(codegen_product(classes_by_name["R130B2"], classes_by_name["R130B2"]))
+
+# %%
+cls0 = classes_by_name["R130B2Sp1"]
+mv0 = functools.reduce(multivector_add, [make_element("A", i, blade) for i,blade in enumerate(cls0.blades)])
+print(mv0)
+print(multivector_mul(multivector_mul(mv0, mv0), multivector_mul(mv0, mv0)))
+print(multivector_norm(mv0))
+
+
+# %%
+def none_map(f, l):
+    return [f(x) if x is not None else None for x in l]
+
+def codegen_exp(cls0, signature=False):
+    sign = cls0.squareSign
+    if cls0.squareSign is None:
+        return ""
+    mv0 = functools.reduce(multivector_add, [make_element("A", i, blade) for i,blade in enumerate(cls0.blades)])
+    prod_mv = multivector_mul(mv0, mv0)
+    prod_blades = tuple(s.blade for s in prod_mv.sums if s is not None)
+    if prod_blades != (tuple(),):
+        return ""
+    res_blades = tuple(cls0.blades)
+    if tuple() not in res_blades:
+        res_blades = (tuple(),) + res_blades
+    if res_blades in classes_by_blades:
+        pass
+    else:
+        res_blades = tuple(copy.copy(basis_vectors))
+    res_cls = classes_by_blades[res_blades]
+    res_mv = functools.reduce(multivector_add, [make_element("res", i, blade) for i,blade in enumerate(res_blades)])
+    
+    prod_sym = multivector_to_sympy(prod_mv)
+    
+    if cls0.squareSign == 1:
+        prod_sym = none_map(lambda x: sympy.functions.sqrt(x), prod_sym)
+    elif cls0.squareSign == -1:
+        prod_sym = none_map(lambda x: sympy.functions.sqrt(-x), prod_sym)
+    else:
+        prod_sym = none_map(lambda x: sympy.functions.sqrt(cls0.squareSign * x), prod_sym)
+        
+    unit_blade = none_map(lambda x: x/prod_sym[0], multivector_to_sympy(mv0))
+    
+    cls_blades = tuple(s.blade for s in mv0.sums if s is not None)
+    
+    if cls_blades == (tuple(),):
+        scalar = none_map(sympy.functions.exp, multivector_to_sympy(mv0))
+        vec = [None] * len(mv0.sums)
+    elif cls0.squareSign == 1:
+        scalar = none_map(sympy.functions.cosh, prod_sym)
+        vec = none_map(sympy.functions.sinh, prod_sym)
+    elif cls0.squareSign == -1:
+        scalar = none_map(sympy.functions.cos, prod_sym)
+        vec = none_map(sympy.functions.sin, prod_sym)
+    else:
+        raise RuntimeError("Does not square to + or -")
+        
+    if vec[0] is not None:
+        vec = none_map(lambda x: vec[0] * x, unit_blade)
+        
+    quant_sym = [None if (s is None and v is None) else (s if v is None else (v if s is None else s + v)) for s,v in zip(scalar, vec)]
+    quant_sym = none_map(lambda x: sympy.simplify(x), quant_sym)
+    
+    lines = []
+    if signature:
+        lines.append("template<typename T>")
+        lines.append("inline " + res_cls.name + "<T> exp(const " + cls0.name + "<T> &A);")
+    else:
+        lines.append("template<typename T>")
+        lines.append("inline " + res_cls.name + "<T> exp(const " + cls0.name + "<T> &A) {")
+        lines.append("    " + res_cls.name + "<T> res;")
+        lines.append(codegen_assignment(res_mv, quant_sym))
+        lines.append("    return res;")
+        lines.append("};")
+    return "\n".join(lines)
+
+
+# %%
+cls0 = classes_by_name["R130B0"]
+print(cls0)
+print(codegen_exp(cls0))
 
 
 # %%
@@ -1023,7 +1165,6 @@ def codegen_negation(cls0, signature=False, in_class=False):
     lines = []
     if signature:
         if in_class:
-            lines.append("template<typename T>")
             lines.append("inline " + res_cls.name + "<T> negation() const;")
         else:
             lines.append("template<typename T>")
@@ -1091,7 +1232,6 @@ def codegen_involution(cls0, signature=False):
     body = codegen_assignment(res_mv, quant_mv)[:-1]
     lines = []
     if signature:
-        lines.append("template<typename T>")
         lines.append("inline " + res_cls.name + "<T> involution() const;")
     else:
         lines.append("template<typename T>")
@@ -1120,7 +1260,6 @@ def codegen_reversion(cls0, signature=False):
     body = codegen_assignment(res_mv, quant_mv)
     lines = []
     if signature:
-        lines.append("template<typename T>")
         lines.append("inline " + res_cls.name + "<T> reversion() const;")
     else:
         lines.append("template<typename T>")
@@ -1149,7 +1288,6 @@ def codegen_conjugate(cls0, signature=False):
     body = codegen_assignment(res_mv, quant_mv)
     lines = []
     if signature:
-        lines.append("template<typename T>")
         lines.append("inline " + res_cls.name + "<T> conjugate() const;")
     else:
         lines.append("template<typename T>")
@@ -1178,7 +1316,6 @@ def codegen_dual(cls0, signature=False):
     body = codegen_assignment(res_mv, quant_mv)
     lines = []
     if signature:
-        lines.append("template<typename T>")
         lines.append("inline " + res_cls.name + "<T> dual() const;")
     else:
         lines.append("template<typename T>")
@@ -1204,17 +1341,19 @@ def codegen_norm(cls0, signature=False):
         res_blades = tuple(copy.copy(basis_vectors))
     res_cls = classes_by_blades[res_blades]
     res_mv = functools.reduce(multivector_add, [make_element("res", i, blade) for i,blade in enumerate(res_blades)])
-    body = codegen_assignment(res_mv, quant_mv)
+    
+    quant_sym = [sympy.functions.Abs(sympy.functions.sqrt(s)) if s is not None else None for s in multivector_to_sympy(quant_mv)]
+    
+    body = codegen_assignment(res_mv, quant_sym)
     lines = []
     if signature:
-        lines.append("template<typename T>")
         lines.append("inline " + res_cls.name + "<T> norm() const;")
     else:
         lines.append("template<typename T>")
         lines.append("inline " + res_cls.name + "<T> " + cls0.name + "<T>::norm() const {")
         lines.append("    " + res_cls.name + "<T> res;")
         lines.append(body)
-        lines.append("    res[0]=std::sqrt(res[0]);")
+        #lines.append("    res[0]=std::sqrt(std::abs(res[0]));")
         lines.append("    return res;")
         lines.append("};")
     return "\n".join(lines)
@@ -1234,18 +1373,20 @@ def codegen_invnorm(cls0, signature=False):
         res_blades = tuple(copy.copy(basis_vectors))
     res_cls = classes_by_blades[res_blades]
     res_mv = functools.reduce(multivector_add, [make_element("res", i, blade) for i,blade in enumerate(res_blades)])
-    body = codegen_assignment(res_mv, quant_mv)
+    
+    quant_sym = [1/sympy.functions.Abs(sympy.functions.sqrt(s)) if s is not None else None for s in multivector_to_sympy(quant_mv)]
+    
+    body = codegen_assignment(res_mv, quant_sym)
     lines = []
     
     if signature:
-        lines.append("template<typename T>")
         lines.append("inline " + res_cls.name + "<T> invnorm() const;")
     else:
         lines.append("template<typename T>")
         lines.append("inline " + res_cls.name + "<T> " + cls0.name + "<T>::invnorm() const {")
         lines.append("    " + res_cls.name + "<T> res;")
         lines.append(body)
-        lines.append("    res[0]=1.0/std::sqrt(res[0]);")
+        #lines.append("    res[0]=1.0/std::sqrt(res[0]);")
         lines.append("    return res;")
         lines.append("};")
     return "\n".join(lines)
@@ -1266,7 +1407,6 @@ def codegen_conversion(cls, res_cls, signature=False):
     lines = []
     
     if signature:
-        lines.append("template<typename T>")
         lines.append("inline operator " + res_cls.name + "<T>() const;")
     else:
         body = codegen_assignment(res_mv, mv)
@@ -1296,7 +1436,6 @@ def codegen_scalarconversion(cls, signature=False):
     lines = []
     
     if signature:
-        lines.append("template<typename T>")
         lines.append("inline operator T() const;")
     else:
         body = codegen_assignment(res_mv, mv)
@@ -1314,11 +1453,14 @@ def codegen_accessors(cls):
     lines = []
     for i, blade in enumerate(cls.blades):
         if len(blade) == 0:
-            lines.append("T scalar() {return (*this)[" + str(i) + "];}")
+            lines.append("T & scalar() {return (*this)[" + str(i) + "];}")
+            lines.append("T const & scalar() const {return (*this)[" + str(i) + "];}")
         else:
-            lines.append("T " + pretty_print((1.0, blade), basis_vectors, metric) + "() {return (*this)[" + str(i) + "];}")
+            lines.append("T & " + pretty_print((1.0, blade), basis_vectors, metric) + "() {return (*this)[" + str(i) + "];}")
+            lines.append("T const & " + pretty_print((1.0, blade), basis_vectors, metric) + "() const {return (*this)[" + str(i) + "];}")
             if len(blade) == len(basis_vectors[-1]):
-                lines.append("T pseudoscalar() {return " + pretty_print((1.0, blade), basis_vectors, metric) + "();}")
+                lines.append("T & pseudoscalar() {return " + pretty_print((1.0, blade), basis_vectors, metric) + "();}")
+                lines.append("T const & pseudoscalar() const {return " + pretty_print((1.0, blade), basis_vectors, metric) + "();}")
     return "\n".join(lines)
 
 
@@ -1340,8 +1482,8 @@ def codegen_class(cls, tab="    "):
     lines.append(tab + "std::array<T, " + str(len(cls.blades)) + "> mvec;")
     lines.append("public:")
     lines.append(tab + cls.name + "() {mvec.fill(0);}")
-    lines.append(tab + "T& operator [] (size_t idx) {return mvec[idx];}")
-    lines.append(tab + "const T& operator [] (size_t idx) const {return mvec[idx];}")
+    lines.append(tab + "T & operator [] (size_t idx) {return mvec[idx];}")
+    lines.append(tab + "T const & operator [] (size_t idx) const {return mvec[idx];}")
     block = codegen_accessors(cls)
     lines.append(retab(block, tab=tab))
     block = codegen_scalarconversion(cls, signature=True)
@@ -1365,7 +1507,7 @@ def codegen_class(cls, tab="    "):
     lines.append(retab(block, tab=tab))
     block = codegen_invnorm(cls, signature=True)
     lines.append(retab(block, tab=tab))
-    lines.append("}")
+    lines.append("};")
     return "\n".join(lines)
 print(codegen_class(classes_by_name["R130B0"]))
 print(codegen_class(classes_by_name["R130MV"]))
@@ -1381,7 +1523,7 @@ def codegen_all_unary():
         lines.append("// " + comment)
         lines.append("//" + "-"*(len(comment)+1))
         lines.append("")
-        for func in [codegen_negation, codegen_involution, codegen_reversion, codegen_conjugate, codegen_dual, codegen_norm, codegen_invnorm]:
+        for func in [codegen_negation, codegen_involution, codegen_reversion, codegen_conjugate, codegen_dual, codegen_norm, codegen_invnorm, codegen_exp]:
             lines.append(func(cls))
             lines.append("")
     return "\n".join(lines)
@@ -1478,14 +1620,12 @@ stga3_lines.append("#include <cmath>")
 stga3_lines.append("")
 stga3_lines.append("namespace stga3 {")
 for cls in classes:
+    stga3_lines.append("template <typename T>")
     stga3_lines.append("class " + cls.name + ";")
 stga3_lines.append("")
-stga3_lines.append("typedef R130B0 Scalar;")
-stga3_lines.append("typedef R130B1 Vector;")
-stga3_lines.append("typedef R130B2 Bivector;")
-stga3_lines.append("typedef R130B3 Trivector;")
-stga3_lines.append("typedef R130B4 Pseudoscalar;")
-stga3_lines.append("typedef R130MV Multivector;")
+for name, alias in [("R130B0", "Scalar"), ("R130B1", "Vector"), ("R130B2", "Bivector"), ("R130B3", "Trivector"), ("R130B4", "Pseudoscalar"), ("R130MV", "Multivector")]:
+    stga3_lines.append("template <typename T>")
+    stga3_lines.append("using " + alias + " = " + name + "<T>;")
 stga3_lines.append("")
 stga3_lines.append(stga3_body)
 stga3_lines.append("")
