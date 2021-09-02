@@ -476,9 +476,6 @@ def sum_to_sympy(s):
 
 def multivector_to_sympy(mv):
     return [sum_to_sympy(mv.sums[i]) if mv.sums[i] is not None else None for i, blade in enumerate(mv.blades)]
-b = make_element("B", 2, (0,))
-mv_sym = multivector_to_sympy(multivector_mul(b, b))
-[sympy.printing.cxxcode(s) for s in mv_sym]
 
 
 # %%
@@ -553,6 +550,11 @@ def multivector_mul(mv0, mv1):
 a = make_element("A", 0, (1,2))
 b = make_element("B", 0, (1,))
 multivector_mul(a, b)
+
+# %%
+b = make_element("B", 2, (0,))
+mv_sym = multivector_to_sympy(multivector_mul(b, b))
+[sympy.printing.cxxcode(s) for s in mv_sym]
 
 
 # %%
@@ -890,8 +892,10 @@ def codegen_assignment(dest, quant, tab=None):
         quant_sym = multivector_to_sympy(quant)
     else:
         quant_sym = quant
-    poly_subexpressions, poly_expressions = sympy.cse(quant_sym)
-    factor_subexpressions, factor_expressions = sympy.cse(sympy.factor(quant_sym))
+    poly_subexpressions, poly_expressions = sympy.cse(quant_sym, order="none")
+    poly_expressions = [sympy.simplify(ex) if ex is not None else None for ex in poly_expressions]
+    factor_subexpressions, factor_expressions = sympy.cse(sympy.factor(quant_sym), order="none")
+    factor_expressions = [sympy.simplify(ex) if ex is not None else None for ex in factor_expressions]
     poly_count = sum([s.count_ops() for n,s in poly_subexpressions] + [e.count_ops() for e in poly_expressions if e is not None])
     factor_count = sum([s.count_ops() for n,s in factor_subexpressions] + [e.count_ops() for e in factor_expressions if e is not None])
     if poly_count < factor_count:
@@ -930,6 +934,9 @@ def codegen_product(cls0, cls1, signature=False):
     if signature:
         lines.append("template<typename T>")
         lines.append("inline " + res_cls.name + "<T> operator*(const " + cls0.name + "<T> &A, const " + cls1.name + "<T> &B);")
+        if not np.any([len(blade) > 0 for blade in cls1.blades]):
+            lines.append("template<typename T>")
+            lines.append("inline " + res_cls.name + "<T> operator/(const " + cls0.name + "<T> &A, const " + cls1.name + "<T> &B);")
     else:
         lines.append("template<typename T>")
         lines.append("inline " + res_cls.name + "<T> operator*(const " + cls0.name + "<T> &A, const " + cls1.name + "<T> &B) {")
@@ -937,10 +944,22 @@ def codegen_product(cls0, cls1, signature=False):
         lines.append(codegen_assignment(res_mv, prod_mv))
         lines.append("    return res;")
         lines.append("};")
+        if not np.any([len(blade) > 0 for blade in cls1.blades]):
+            mv0_sym = multivector_to_sympy(mv0)
+            mv1_sym = multivector_to_sympy(mv1)
+            quant_sym = [m / mv1_sym[0] if m is not None else None for m in mv0_sym]
+            lines.append("")
+            lines.append("template<typename T>")
+            lines.append("inline " + res_cls.name + "<T> operator/(const " + cls0.name + "<T> &A, const " + cls1.name + "<T> &B) {")
+            lines.append("    " + res_cls.name + "<T> res;")
+            lines.append(codegen_assignment(res_mv, quant_sym))
+            lines.append("    return res;")
+            lines.append("};")
     return "\n".join(lines)
 print(codegen_product(classes_by_name["R130B2"], classes_by_name["R130B2"], signature=True))
 print()
 print(codegen_product(classes_by_name["R130B2"], classes_by_name["R130B2"]))
+print(codegen_product(classes_by_name["R130B2"], classes_by_name["R130B0"]))
 
 # %%
 cls0 = classes_by_name["R130B2Sp1"]
@@ -1028,7 +1047,7 @@ print(codegen_exp(cls0))
 def codegen_scalarproduct(cls0, signature=False):
     mv = functools.reduce(multivector_add, [make_element("A", i, blade) for i,blade in enumerate(cls0.blades)])
     scalar = make_element("B", None, tuple())
-    prod_mv = multivector_mul(mv0, scalar)
+    prod_mv = multivector_mul(mv, scalar)
     res_blades = tuple(s.blade for s in prod_mv.sums if s is not None)
     if res_blades in classes_by_blades:
         pass
@@ -1042,6 +1061,8 @@ def codegen_scalarproduct(cls0, signature=False):
         lines.append("inline " + res_cls.name + "<T> operator*(const " + cls0.name + "<T> &A, const T &B);")
         lines.append("template<typename T>")
         lines.append("inline " + res_cls.name + "<T> operator*(const T &A, const " + cls0.name + "<T> &B);")
+        lines.append("template<typename T>")
+        lines.append("inline " + res_cls.name + "<T> operator/(const " + cls0.name + "<T> &A, const T &B);")
     else:
         lines.append("template<typename T>")
         lines.append("inline " + res_cls.name + "<T> operator*(const " + cls0.name + "<T> &A, const T &B) {")
@@ -1051,7 +1072,11 @@ def codegen_scalarproduct(cls0, signature=False):
         lines.append("};")
         lines.append("template<typename T>")
         lines.append("inline " + res_cls.name + "<T> operator*(const T &A, const " + cls0.name + "<T> &B) {")
-        lines.append("   return B*A;")
+        lines.append("    return B*A;")
+        lines.append("};")
+        lines.append("template<typename T>")
+        lines.append("inline " + res_cls.name + "<T> operator/(const " + cls0.name + "<T> &A, const T &B) {")
+        lines.append("    return A * (1.0 / B);")
         lines.append("};")
     return "\n".join(lines)
 print(codegen_scalarproduct(classes_by_name["R130B2"], signature=True))
@@ -1168,7 +1193,7 @@ def codegen_negation(cls0, signature=False, in_class=False):
             lines.append("inline " + res_cls.name + "<T> negation() const;")
         else:
             lines.append("template<typename T>")
-            lines.append("inline " + res_cls.name + "<T> operator-(const " + cls0.name + "<T> &A) const;")
+            lines.append("inline " + res_cls.name + "<T> operator-(const " + cls0.name + "<T> &A);")
     else:
         lines.append("template<typename T>")
         lines.append("inline " + res_cls.name + "<T> " + cls0.name + "<T>::negation() const {")
@@ -1178,7 +1203,7 @@ def codegen_negation(cls0, signature=False, in_class=False):
         lines.append("};")
         lines.append("")
         lines.append("template<typename T>")
-        lines.append("inline " + res_cls.name + "<T> operator-(const " + cls0.name + "<T> &A) const {")
+        lines.append("inline " + res_cls.name + "<T> operator-(const " + cls0.name + "<T> &A) {")
         lines.append("    " + "return A.negation();")
         lines.append("};")
     return "\n".join(lines)
@@ -1219,6 +1244,8 @@ print(codegen_subtraction(classes_by_name["R130B2"], classes_by_name["R130B2"]))
 
 
 # %%
+
+# %%
 def codegen_involution(cls0, signature=False):
     mv0 = functools.reduce(multivector_add, [make_element("(*this)", i, blade) for i,blade in enumerate(cls0.blades)])
     quant_mv = multivector_involution(mv0)
@@ -1229,7 +1256,7 @@ def codegen_involution(cls0, signature=False):
         res_blades = tuple(copy.copy(basis_vectors))
     res_cls = classes_by_blades[res_blades]
     res_mv = functools.reduce(multivector_add, [make_element("res", i, blade) for i,blade in enumerate(res_blades)])
-    body = codegen_assignment(res_mv, quant_mv)[:-1]
+    body = codegen_assignment(res_mv, quant_mv)
     lines = []
     if signature:
         lines.append("inline " + res_cls.name + "<T> involution() const;")
@@ -1411,7 +1438,7 @@ def codegen_conversion(cls, res_cls, signature=False):
     else:
         body = codegen_assignment(res_mv, mv)
         lines.append("template<typename T>")
-        lines.append("inline " + cls.name + "::operator " + res_cls.name + "<T>() const {")
+        lines.append("inline " + cls.name + "<T>::operator " + res_cls.name + "<T>() const {")
         lines.append("    " + res_cls.name + "<T> res;")
         lines.append(body)
         lines.append("    return res;")
@@ -1424,6 +1451,36 @@ print()
 print(codegen_conversion(classes_by_name["R130MV"], classes_by_name["R130B2"], signature=True))
 print()
 print(codegen_conversion(classes_by_name["R130MV"], classes_by_name["R130B2"]))
+
+
+# %%
+
+# %%
+def codegen_binary_conjugate(cls0, cls1, signature=False):
+    mv0 = functools.reduce(multivector_add, [make_element("(*this)", i, blade) for i,blade in enumerate(cls0.blades)])
+    mv1 = functools.reduce(multivector_add, [make_element("A", i, blade) for i,blade in enumerate(cls1.blades)])
+    prod_mv = multivector_mul(multivector_mul(multivector_conjugate(mv0), mv1), mv0)
+    res_blades = tuple(s.blade for s in prod_mv.sums if s is not None)
+    if res_blades in classes_by_blades:
+        pass
+    else:
+        res_blades = tuple(copy.copy(basis_vectors))
+    res_cls = classes_by_blades[res_blades]
+    res_mv = functools.reduce(multivector_add, [make_element("res", i, blade) for i,blade in enumerate(res_blades)])
+    lines = []
+    if signature:
+        lines.append("inline " + res_cls.name + "<T> conjugate(const " + cls1.name + "<T> &A) const;")
+    else:
+        lines.append("template<typename T>")
+        lines.append("inline " + res_cls.name + "<T> " + cls0.name + "<T>::conjugate(const " + cls1.name + "<T> &A) const {")
+        lines.append("    " + res_cls.name + "<T> res;")
+        lines.append(codegen_assignment(res_mv, prod_mv))
+        lines.append("    return res;")
+        lines.append("};")
+    return "\n".join(lines)
+print(codegen_binary_conjugate(classes_by_name["Boost"], classes_by_name["R130B1"], signature=True))
+print()
+print(codegen_binary_conjugate(classes_by_name["Boost"], classes_by_name["R130B1"]))
 
 
 # %%
@@ -1440,7 +1497,7 @@ def codegen_scalarconversion(cls, signature=False):
     else:
         body = codegen_assignment(res_mv, mv)
         lines.append("template<typename T>")
-        lines.append("inline " + cls.name + "::operator T() const {")
+        lines.append("inline " + cls.name + "<T>::operator T() const {")
         lines.append("    return (*this)[0];")
         lines.append("};")
     return "\n".join(lines)
@@ -1482,6 +1539,7 @@ def codegen_class(cls, tab="    "):
     lines.append(tab + "std::array<T, " + str(len(cls.blades)) + "> mvec;")
     lines.append("public:")
     lines.append(tab + cls.name + "() {mvec.fill(0);}")
+    lines.append(tab + cls.name + "(std::initializer_list<T> const & v) {std::copy(v.begin(), v.end(), mvec.begin());}")
     lines.append(tab + "T & operator [] (size_t idx) {return mvec[idx];}")
     lines.append(tab + "T const & operator [] (size_t idx) const {return mvec[idx];}")
     block = codegen_accessors(cls)
@@ -1507,6 +1565,10 @@ def codegen_class(cls, tab="    "):
     lines.append(retab(block, tab=tab))
     block = codegen_invnorm(cls, signature=True)
     lines.append(retab(block, tab=tab))
+    for res_cls in classes:
+        block = codegen_binary_conjugate(cls, res_cls, signature=True)
+        if block != "":
+            lines.append(retab(block, tab=tab))
     lines.append("};")
     return "\n".join(lines)
 print(codegen_class(classes_by_name["R130B0"]))
@@ -1526,6 +1588,9 @@ def codegen_all_unary():
         for func in [codegen_negation, codegen_involution, codegen_reversion, codegen_conjugate, codegen_dual, codegen_norm, codegen_invnorm, codegen_exp]:
             lines.append(func(cls))
             lines.append("")
+        block = codegen_scalarconversion(cls)
+        if block != "":
+            lines.append(block)
     return "\n".join(lines)
 
 unary_body = codegen_all_unary()
@@ -1551,31 +1616,59 @@ f = open("UnaryOperators.h", "w")
 f.write(unary_text)
 f.close()
 
-
 # %%
+from tqdm import tqdm
 def codegen_all_binary():
     lines = []
+    pbar = tqdm(total=len(classes)**2 * 7 + len(classes))
     for cls0 in classes:
         for cls1 in classes:
+            print(cls0.name, cls1.name)
             comment = "(" + cls0.name + ", " + cls1.name + ") binary operations"
             lines.append("//" + "-"*(len(comment)+1))
             lines.append("// " + comment)
             lines.append("//" + "-"*(len(comment)+1))
             lines.append("")
+            print("conversion")
             block = codegen_conversion(cls0, cls1)
+            pbar.update(1)
             if block != "":
                 lines.append(block)
                 lines.append("")
+            print("addition")
             lines.append(codegen_addition(cls0, cls1))
+            pbar.update(1)
             lines.append("")
+            print("subtraction")
             lines.append(codegen_subtraction(cls0, cls1))
+            pbar.update(1)
             lines.append("")
+            print("product")
             lines.append(codegen_product(cls0, cls1))
+            pbar.update(1)
             lines.append("")
+            print("innerproduct")
             lines.append(codegen_innerproduct(cls0, cls1))
+            pbar.update(1)
             lines.append("")
+            print("outerproduct")
             lines.append(codegen_outerproduct(cls0, cls1))
+            pbar.update(1)
             lines.append("")
+            print("binary_conjugate")
+            lines.append(codegen_binary_conjugate(cls0, cls1))
+            pbar.update(1)
+            lines.append("")
+        print(cls0.name, "scalar")
+        comment = "(" + cls0.name + ", scalar) binary operations"
+        lines.append("//" + "-"*(len(comment)+1))
+        lines.append("// " + comment)
+        lines.append("//" + "-"*(len(comment)+1))
+        lines.append("")
+        print("scalarproduct")
+        lines.append(codegen_scalarproduct(cls0))
+        pbar.update(1)
+        lines.append("")
     return "\n".join(lines)
 
 binary_body = codegen_all_binary()
@@ -1617,6 +1710,8 @@ stga3_lines.append("#define LI_STGA3_STGA3_H")
 stga3_lines.append("")
 stga3_lines.append("#include <array>")
 stga3_lines.append("#include <cmath>")
+stga3_lines.append("#include <algorithm>")
+stga3_lines.append("#include <initializer_list>")
 stga3_lines.append("")
 stga3_lines.append("namespace stga3 {")
 for cls in classes:
