@@ -19,6 +19,7 @@ import collections
 import copy
 import typing
 import dataclasses
+import functools
 
 # %%
 metric = [1, -1, -1, -1]
@@ -552,6 +553,37 @@ b = make_element("B", 0, (1,))
 multivector_mul(a, b)
 
 # %%
+a = functools.reduce(multivector_add, [make_element("A", i, blade) for i, blade in enumerate(boost_bivector_blades)])
+b = functools.reduce(multivector_add, [make_element("B", i, blade) for i, blade in enumerate(rotation_bivector_blades)])
+c = multivector_add(a, b)
+multivector_mul(c, c)
+
+# %%
+a2 = functools.reduce(multivector_add, [make_element("A", i, blade) for i, blade in enumerate(bivector_blades)])
+a2_sym = multivector_to_sympy(multivector_mul(a2, a2))
+phi = sympy.functions.atan2(a2_sym[-1], a2_sym[0])
+rho = sympy.functions.sqrt(a2_sym[0]*a2_sym[0] + a2_sym[-1]*a2_sym[-1])
+print(a2_sym[0])
+print()
+print(a2_sym[-1])
+print()
+print(phi)
+print()
+print(rho)
+print()
+s0 = sympy.simplify(1/sympy.functions.sqrt(rho) * sympy.functions.cos(-phi/2))
+s1 = sympy.simplify(1/sympy.functions.sqrt(rho) * sympy.functions.sin(-phi/2))
+b = [sympy.symbols("A[" + str(i) + "]") for i in range(6)]
+print(sympy.simplify(s0*b[0] - s1*b[3]))
+bp = sympy.simplify(s0*b[3] + s1*b[0])
+
+# %%
+bp.evalf(subs={"A[0]": 1, "A[1]": 2, "A[2]": 3, "A[3]": 4, "A[4]": 5, "A[5]": 6})
+
+# %%
+multivector_mul(make_element("A", None, (0,1,2,3)), make_element("A", None, (0,1,2,3)))
+
+# %%
 b = make_element("B", 2, (0,))
 mv_sym = multivector_to_sympy(multivector_mul(b, b))
 [sympy.printing.cxxcode(s) for s in mv_sym]
@@ -651,7 +683,6 @@ def multivector_conjugate(mv):
 
 
 # %%
-import functools
 a = functools.reduce(multivector_add, [make_element("A", i, basis_vectors[i]) for i in range(len(basis_vectors))])
 print(a)
 print()
@@ -660,7 +691,6 @@ print()
 print(multivector_mul(a, multivector_conjugate(a)))
 
 # %%
-import functools
 a = functools.reduce(multivector_add, [make_element("A", i, basis_vectors[i]) for i in range(len(basis_vectors))])
 print(multivector_involution(a))
 print()
@@ -763,11 +793,25 @@ def multivector_outerproduct(mv0, mv1):
 
 
 # %%
+def multivector_binary_conjugate(mv0, mv1):
+    return multivector_mul(multivector_mul(multivector_conjugate(mv0), mv1), mv0)
+
+
+# %%
+
+# %%
 a = functools.reduce(multivector_add, [make_element("A", i, basis_vectors[i]) for i in range(len(basis_vectors))])
 b = functools.reduce(multivector_add, [make_element("B", i, basis_vectors[i]) for i in range(1, 5)])
 print(multivector_innerproduct(a, b))
 print()
 print(multivector_outerproduct(a, b))
+
+# %%
+a = functools.reduce(multivector_add, [make_element("A", i, blade) for i, blade in enumerate(boost_blades)])
+b = functools.reduce(multivector_add, [make_element("B", i, blade) for i, blade in enumerate(rotation_blades)])
+print(multivector_add(multivector_mul(a, b), multivector_mul(b, a)))
+print()
+print(multivector_add(multivector_mul(a, b), multivector_negate(multivector_mul(b, a))))
 
 
 # %%
@@ -842,6 +886,41 @@ print(multivector_mul(mv0, mv1))
 print(multivector_mul(mv1, mv0))
 print(rotor_blades)
 
+
+# %%
+def class_compare(cls0, cls1):
+    n0 = cls0.dim is None
+    n1 = cls1.dim is None
+    if n0 and not n1:
+        return 1
+    elif n1 and not n0:
+        return -1
+    elif n0 and n1:
+        pass
+    else:
+        dim0 = cls0.dim
+        dim1 = cls1.dim
+        if dim0 < dim1:
+            return -1
+        elif dim1 < dim0:
+            return 1
+        else:
+            pass
+
+    if len(cls0.blades) < len(cls1.blades):
+        return -1
+    elif len(cls1.blades) < len(cls0.blades):
+        return 1
+    blade_str0 = tuple([str(basis_vectors.index(blade)) for blade in cls0.blades])
+    blade_str1 = tuple([str(basis_vectors.index(blade)) for blade in cls1.blades])
+    if blade_str0 < blade_str1:
+        return -1
+    elif blade_str1 < blade_str0:
+        return 1
+    else:
+        return 0
+
+
 # %%
 classes = [CodeGenClass(name="R130B"+str(dim)+"S"+("p1" if sq > 0 else ("m1" if sq < 0 else "0")), squareSign=sq, dim=dim, blades=blades) for (sq, dim), blades in blade_groups(basis_vectors).items()]
 dim_counts = collections.Counter()
@@ -855,10 +934,21 @@ classes.append(CodeGenClass(name="R130MV", squareSign=None, dim=None, blades=cop
 classes.append(CodeGenClass(name="Boost",squareSign=None, dim=None, blades=copy.copy(boost_blades)))
 classes.append(CodeGenClass(name="Rotation",squareSign=None, dim=None, blades=copy.copy(rotation_blades)))
 classes.append(CodeGenClass(name="Rotor",squareSign=None, dim=None, blades=copy.copy(rotor_blades)))
-classes = sorted(classes, key=lambda x: x.name)
+classes = sorted(classes, key=functools.cmp_to_key(class_compare))
+classes_name_sort = sorted(classes, key=lambda x: x.name)
 classes_by_name = dict([(cls.name, cls) for cls in classes])
 classes_by_blades = dict([(tuple(cls.blades), cls) for cls in classes])
 classes
+
+
+# %%
+def get_res_blades(blades):
+    if tuple(blades) in classes_by_blades:
+        return tuple(blades)
+    for cls in classes:
+        if np.all([b in cls.blades for b in blades]):
+            return tuple(copy.copy(cls.blades))
+    return tuple(copy.copy(classes[-1].blades))
 
 
 # %%
@@ -924,10 +1014,7 @@ def codegen_product(cls0, cls1, signature=False):
     mv1 = functools.reduce(multivector_add, [make_element("B", i, blade) for i,blade in enumerate(cls1.blades)])
     prod_mv = multivector_mul(mv0, mv1)
     res_blades = tuple(s.blade for s in prod_mv.sums if s is not None)
-    if res_blades in classes_by_blades:
-        pass
-    else:
-        res_blades = tuple(copy.copy(basis_vectors))
+    res_blades = get_res_blades(res_blades)
     res_cls = classes_by_blades[res_blades]
     res_mv = functools.reduce(multivector_add, [make_element("res", i, blade) for i,blade in enumerate(res_blades)])
     lines = []
@@ -985,10 +1072,7 @@ def codegen_exp(cls0, signature=False):
     res_blades = tuple(cls0.blades)
     if tuple() not in res_blades:
         res_blades = (tuple(),) + res_blades
-    if res_blades in classes_by_blades:
-        pass
-    else:
-        res_blades = tuple(copy.copy(basis_vectors))
+    res_blades = get_res_blades(res_blades)
     res_cls = classes_by_blades[res_blades]
     res_mv = functools.reduce(multivector_add, [make_element("res", i, blade) for i,blade in enumerate(res_blades)])
     
@@ -1038,7 +1122,7 @@ def codegen_exp(cls0, signature=False):
 
 
 # %%
-cls0 = classes_by_name["R130B0"]
+cls0 = classes_by_name["R130B2Sm1"]
 print(cls0)
 print(codegen_exp(cls0))
 
@@ -1049,10 +1133,7 @@ def codegen_scalarproduct(cls0, signature=False):
     scalar = make_element("B", None, tuple())
     prod_mv = multivector_mul(mv, scalar)
     res_blades = tuple(s.blade for s in prod_mv.sums if s is not None)
-    if res_blades in classes_by_blades:
-        pass
-    else:
-        res_blades = tuple(copy.copy(basis_vectors))
+    res_blades = get_res_blades(res_blades)
     res_cls = classes_by_blades[res_blades]
     res_mv = functools.reduce(multivector_add, [make_element("res", i, blade) for i,blade in enumerate(res_blades)])
     lines = []
@@ -1090,10 +1171,8 @@ def codegen_innerproduct(cls0, cls1, signature=False):
     mv1 = functools.reduce(multivector_add, [make_element("B", i, blade) for i,blade in enumerate(cls1.blades)])
     prod_mv = multivector_innerproduct(mv0, mv1)
     res_blades = tuple(s.blade for s in prod_mv.sums if s is not None)
-    if res_blades in classes_by_blades:
-        pass
-    else:
-        res_blades = tuple(copy.copy(basis_vectors))
+    res_blades = get_res_blades(res_blades)
+    print(res_blades)
     res_cls = classes_by_blades[res_blades]
     res_mv = functools.reduce(multivector_add, [make_element("res", i, blade) for i,blade in enumerate(res_blades)])
     lines = []
@@ -1118,11 +1197,11 @@ def codegen_outerproduct(cls0, cls1, signature=False):
     mv0 = functools.reduce(multivector_add, [make_element("A", i, blade) for i,blade in enumerate(cls0.blades)])
     mv1 = functools.reduce(multivector_add, [make_element("B", i, blade) for i,blade in enumerate(cls1.blades)])
     prod_mv = multivector_outerproduct(mv0, mv1)
+    print(prod_mv)
     res_blades = tuple(s.blade for s in prod_mv.sums if s is not None)
-    if res_blades in classes_by_blades:
-        pass
-    else:
-        res_blades = tuple(copy.copy(basis_vectors))
+    print(res_blades)
+    res_blades = get_res_blades(res_blades)
+    print(res_blades)
     res_cls = classes_by_blades[res_blades]
     res_mv = functools.reduce(multivector_add, [make_element("res", i, blade) for i,blade in enumerate(res_blades)])
     lines = []
@@ -1137,9 +1216,9 @@ def codegen_outerproduct(cls0, cls1, signature=False):
         lines.append("    return res;")
         lines.append("};")
     return "\n".join(lines)
-print(codegen_outerproduct(classes_by_name["R130B2"], classes_by_name["R130B2"], signature=True))
+print(codegen_outerproduct(classes_by_name["Rotor"], classes_by_name["R130B3Sp1"], signature=True))
 print()
-print(codegen_outerproduct(classes_by_name["R130B2"], classes_by_name["R130B2"]))
+print(codegen_outerproduct(classes_by_name["Rotor"], classes_by_name["R130B3Sp1"]))
 
 
 # %%
@@ -1148,10 +1227,7 @@ def codegen_addition(cls0, cls1, signature=False):
     mv1 = functools.reduce(multivector_add, [make_element("B", i, blade) for i,blade in enumerate(cls1.blades)])
     prod_mv = multivector_add(mv0, mv1)
     res_blades = tuple(s.blade for s in prod_mv.sums if s is not None)
-    if res_blades in classes_by_blades:
-        pass
-    else:
-        res_blades = tuple(copy.copy(basis_vectors))
+    res_blades = get_res_blades(res_blades)
     res_cls = classes_by_blades[res_blades]
     res_mv = functools.reduce(multivector_add, [make_element("res", i, blade) for i,blade in enumerate(res_blades)])
     lines = []
@@ -1170,20 +1246,15 @@ print(codegen_addition(classes_by_name["R130B2"], classes_by_name["R130B2"], sig
 print()
 print(codegen_addition(classes_by_name["R130B2"], classes_by_name["R130B2"]))
 
-# %%
-add_code = [codegen_add(cls0, cls1) for cls0 in classes for cls1 in classes]
-mul_code = [codegen_mul(cls0, cls1) for cls0 in classes for cls1 in classes]
 
+# %%
 
 # %%
 def codegen_negation(cls0, signature=False, in_class=False):
     mv0 = functools.reduce(multivector_add, [make_element("(*this)", i, blade) for i,blade in enumerate(cls0.blades)])
     quant_mv = multivector_negate(mv0)
     res_blades = tuple(s.blade for s in quant_mv.sums if s is not None)
-    if res_blades in classes_by_blades:
-        pass
-    else:
-        res_blades = tuple(copy.copy(basis_vectors))
+    res_blades = get_res_blades(res_blades)
     res_cls = classes_by_blades[res_blades]
     res_mv = functools.reduce(multivector_add, [make_element("res", i, blade) for i,blade in enumerate(res_blades)])
     body = codegen_assignment(res_mv, quant_mv)
@@ -1220,10 +1291,7 @@ def codegen_subtraction(cls0, cls1, signature=False):
     mv1 = functools.reduce(multivector_add, [make_element("B", i, blade) for i,blade in enumerate(cls1.blades)])
     prod_mv = multivector_add(mv0, multivector_negate(mv1))
     res_blades = tuple(s.blade for s in prod_mv.sums if s is not None)
-    if res_blades in classes_by_blades:
-        pass
-    else:
-        res_blades = tuple(copy.copy(basis_vectors))
+    res_blades = get_res_blades(res_blades)
     res_cls = classes_by_blades[res_blades]
     res_mv = functools.reduce(multivector_add, [make_element("res", i, blade) for i,blade in enumerate(res_blades)])
     lines = []
@@ -1250,10 +1318,7 @@ def codegen_involution(cls0, signature=False):
     mv0 = functools.reduce(multivector_add, [make_element("(*this)", i, blade) for i,blade in enumerate(cls0.blades)])
     quant_mv = multivector_involution(mv0)
     res_blades = tuple(s.blade for s in quant_mv.sums if s is not None)
-    if res_blades in classes_by_blades:
-        pass
-    else:
-        res_blades = tuple(copy.copy(basis_vectors))
+    res_blades = get_res_blades(res_blades)
     res_cls = classes_by_blades[res_blades]
     res_mv = functools.reduce(multivector_add, [make_element("res", i, blade) for i,blade in enumerate(res_blades)])
     body = codegen_assignment(res_mv, quant_mv)
@@ -1278,10 +1343,7 @@ def codegen_reversion(cls0, signature=False):
     mv0 = functools.reduce(multivector_add, [make_element("(*this)", i, blade) for i,blade in enumerate(cls0.blades)])
     quant_mv = multivector_reversion(mv0)
     res_blades = tuple(s.blade for s in quant_mv.sums if s is not None)
-    if res_blades in classes_by_blades:
-        pass
-    else:
-        res_blades = tuple(copy.copy(basis_vectors))
+    res_blades = get_res_blades(res_blades)
     res_cls = classes_by_blades[res_blades]
     res_mv = functools.reduce(multivector_add, [make_element("res", i, blade) for i,blade in enumerate(res_blades)])
     body = codegen_assignment(res_mv, quant_mv)
@@ -1306,10 +1368,7 @@ def codegen_conjugate(cls0, signature=False):
     mv0 = functools.reduce(multivector_add, [make_element("(*this)", i, blade) for i,blade in enumerate(cls0.blades)])
     quant_mv = multivector_conjugate(mv0)
     res_blades = tuple(s.blade for s in quant_mv.sums if s is not None)
-    if res_blades in classes_by_blades:
-        pass
-    else:
-        res_blades = tuple(copy.copy(basis_vectors))
+    res_blades = get_res_blades(res_blades)
     res_cls = classes_by_blades[res_blades]
     res_mv = functools.reduce(multivector_add, [make_element("res", i, blade) for i,blade in enumerate(res_blades)])
     body = codegen_assignment(res_mv, quant_mv)
@@ -1334,10 +1393,7 @@ def codegen_dual(cls0, signature=False):
     mv0 = functools.reduce(multivector_add, [make_element("(*this)", i, blade) for i,blade in enumerate(cls0.blades)])
     quant_mv = multivector_dual(mv0)
     res_blades = tuple(s.blade for s in quant_mv.sums if s is not None)
-    if res_blades in classes_by_blades:
-        pass
-    else:
-        res_blades = tuple(copy.copy(basis_vectors))
+    res_blades = get_res_blades(res_blades)
     res_cls = classes_by_blades[res_blades]
     res_mv = functools.reduce(multivector_add, [make_element("res", i, blade) for i,blade in enumerate(res_blades)])
     body = codegen_assignment(res_mv, quant_mv)
@@ -1362,10 +1418,7 @@ def codegen_norm(cls0, signature=False):
     mv0 = functools.reduce(multivector_add, [make_element("(*this)", i, blade) for i,blade in enumerate(cls0.blades)])
     quant_mv = multivector_norm(mv0)
     res_blades = tuple(s.blade for s in quant_mv.sums if s is not None)
-    if res_blades in classes_by_blades:
-        pass
-    else:
-        res_blades = tuple(copy.copy(basis_vectors))
+    res_blades = get_res_blades(res_blades)
     res_cls = classes_by_blades[res_blades]
     res_mv = functools.reduce(multivector_add, [make_element("res", i, blade) for i,blade in enumerate(res_blades)])
     
@@ -1394,10 +1447,7 @@ def codegen_invnorm(cls0, signature=False):
     mv0 = functools.reduce(multivector_add, [make_element("(*this)", i, blade) for i,blade in enumerate(cls0.blades)])
     quant_mv = multivector_norm(mv0)
     res_blades = tuple(s.blade for s in quant_mv.sums if s is not None)
-    if res_blades in classes_by_blades:
-        pass
-    else:
-        res_blades = tuple(copy.copy(basis_vectors))
+    res_blades = get_res_blades(res_blades)
     res_cls = classes_by_blades[res_blades]
     res_mv = functools.reduce(multivector_add, [make_element("res", i, blade) for i,blade in enumerate(res_blades)])
     
@@ -1461,10 +1511,7 @@ def codegen_binary_conjugate(cls0, cls1, signature=False):
     mv1 = functools.reduce(multivector_add, [make_element("A", i, blade) for i,blade in enumerate(cls1.blades)])
     prod_mv = multivector_mul(multivector_mul(multivector_conjugate(mv0), mv1), mv0)
     res_blades = tuple(s.blade for s in prod_mv.sums if s is not None)
-    if res_blades in classes_by_blades:
-        pass
-    else:
-        res_blades = tuple(copy.copy(basis_vectors))
+    res_blades = get_res_blades(res_blades)
     res_cls = classes_by_blades[res_blades]
     res_mv = functools.reduce(multivector_add, [make_element("res", i, blade) for i,blade in enumerate(res_blades)])
     lines = []
@@ -1579,7 +1626,7 @@ print(codegen_class(classes_by_name["Boost"]))
 # %%
 def codegen_all_unary():
     lines = []
-    for cls in classes:
+    for cls in classes_name_sort:
         comment = cls.name + " unary operations"
         lines.append("//" + "-"*(len(comment)+1))
         lines.append("// " + comment)
@@ -1621,8 +1668,8 @@ from tqdm import tqdm
 def codegen_all_binary():
     lines = []
     pbar = tqdm(total=len(classes)**2 * 7 + len(classes))
-    for cls0 in classes:
-        for cls1 in classes:
+    for cls0 in classes_name_sort:
+        for cls1 in classes_name_sort:
             print(cls0.name, cls1.name)
             comment = "(" + cls0.name + ", " + cls1.name + ") binary operations"
             lines.append("//" + "-"*(len(comment)+1))
